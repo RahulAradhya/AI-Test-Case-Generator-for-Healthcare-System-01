@@ -1,0 +1,5 @@
+{
+  "name": "AI Test Case Generator for Healthcare",
+  "description": "An AI-driven system that converts healthcare requirements into traceable, compliant, and executable test cases. This application provides a reviewer dashboard for human validation, traceability, and compliance reporting.",
+  "requestFramePermissions": []
+}
