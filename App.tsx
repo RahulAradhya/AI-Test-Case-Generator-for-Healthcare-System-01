@@ -1,20 +1,23 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { TestCase, TestCaseStatus, Requirement, Role, ExportFormat, AuditLog, AIModel } from './types';
+import { TestCase, TestCaseStatus, Requirement, Role, ExportFormat, AuditLog, AIModel, Project, Release, UserStory } from './types';
 import { generateTestCases } from './services/aiService';
 import { exportTestCases } from './services/exportService';
+import * as storage from './services/storageService';
+import * as projectService from './services/projectService';
 import { TestCaseCard } from './components/TestCaseCard';
 import { TraceabilityMatrix } from './components/TraceabilityMatrix';
 import { ComplianceReport } from './components/ComplianceReport';
 import { AuditLogReport } from './components/AuditLogReport';
 import { AppHealthReport } from './components/AppHealthReport';
-import { DocumentTextIcon, ChartBarIcon, ShieldCheckIcon, BeakerIcon, SparklesIcon, ArrowDownTrayIcon, UserCircleIcon, ArrowRightOnRectangleIcon, ArrowUpTrayIcon, ClipboardDocumentListIcon, CpuChipIcon, CubeTransparentIcon } from './components/icons';
+import { SystemArchitecture } from './components/SystemArchitecture';
+import { DocumentTextIcon, ChartBarIcon, ShieldCheckIcon, BeakerIcon, SparklesIcon, ArrowDownTrayIcon, UserCircleIcon, ArrowRightOnRectangleIcon, ArrowUpTrayIcon, ClipboardDocumentListIcon, CpuChipIcon, CubeTransparentIcon, ServerStackIcon, CloudArrowDownIcon } from './components/icons';
 import { useAuth } from './auth/AuthContext';
 import { Login } from './components/Login';
 
 // Declare pdfjsLib from the CDN script to satisfy TypeScript
 declare var pdfjsLib: any;
 
-type View = 'dashboard' | 'traceability' | 'compliance' | 'audit' | 'health';
+type View = 'dashboard' | 'traceability' | 'compliance' | 'audit' | 'health' | 'architecture';
 
 const roleColors: Record<Role, { bg: string; text: string; accent: string }> = {
     [Role.Admin]: { bg: 'bg-blue-600', text: 'text-blue-700', accent: 'bg-blue-100' },
@@ -25,14 +28,24 @@ const roleColors: Record<Role, { bg: string; text: string; accent: string }> = {
 const MainApp: React.FC = () => {
   const { user, logout } = useAuth();
   const [requirementText, setRequirementText] = useState<string>('As a doctor, I need to be able to securely access a patient\'s medical history by searching for their unique patient ID, so that I can provide an accurate diagnosis. The system must be HIPAA compliant.');
-  const [requirements, setRequirements] = useState<Requirement[]>([]);
-  const [testCases, setTestCases] = useState<TestCase[]>([]);
+  const [requirements, setRequirements] = useState<Requirement[]>(storage.getInitialRequirements);
+  const [testCases, setTestCases] = useState<TestCase[]>(storage.getInitialTestCases);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<View>('dashboard');
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>(storage.getInitialAuditLogs);
   const [selectedModel, setSelectedModel] = useState<AIModel>(AIModel.Gemini);
+
+  // State for project import feature
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [releases, setReleases] = useState<Release[]>([]);
+  const [userStories, setUserStories] = useState<UserStory[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string>('');
+  const [selectedReleaseId, setSelectedReleaseId] = useState<string>('');
+  const [selectedStoryId, setSelectedStoryId] = useState<string>('');
+  const [isProjectLoading, setIsProjectLoading] = useState<boolean>(false);
+
 
   const colors = roleColors[user!.role];
 
@@ -54,6 +67,20 @@ const MainApp: React.FC = () => {
       };
       setAuditLogs(prev => [newLog, ...prev]);
   }, [user]);
+  
+  // --- Data Persistence Effects ---
+  useEffect(() => {
+    storage.saveRequirements(requirements);
+  }, [requirements]);
+
+  useEffect(() => {
+    storage.saveTestCases(testCases);
+  }, [testCases]);
+
+  useEffect(() => {
+    storage.saveAuditLogs(auditLogs);
+  }, [auditLogs]);
+
 
   useEffect(() => {
     // Set up PDF.js worker one time on component mount
@@ -64,7 +91,12 @@ const MainApp: React.FC = () => {
 
   useEffect(() => {
     if (user) {
-        logAction('User Login', `User '${user.username}' logged in successfully.`);
+        const lastLog = auditLogs[0];
+        // Prevents re-logging 'User Login' on every page refresh when session is restored.
+        if (!lastLog || lastLog.action !== 'User Login' || lastLog.username !== user.username) {
+          logAction('User Login', `User '${user.username}' logged in successfully.`);
+        }
+        
         // Set default view based on role
         if (user.role === Role.ComplianceAuditor) {
             setActiveView('compliance');
@@ -74,6 +106,80 @@ const MainApp: React.FC = () => {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]); // Run only when user object changes
+
+  // --- Effects for Project Import ---
+  useEffect(() => {
+    if (canGenerate) {
+        const fetchProjects = async () => {
+            setIsProjectLoading(true);
+            try {
+                const fetchedProjects = await projectService.getProjects();
+                setProjects(fetchedProjects);
+            } catch (err) {
+                setError('Failed to load projects.');
+            } finally {
+                setIsProjectLoading(false);
+            }
+        };
+        fetchProjects();
+    }
+  }, [canGenerate]);
+
+  useEffect(() => {
+    if (selectedProjectId) {
+        const fetchReleases = async () => {
+            setIsProjectLoading(true);
+            setReleases([]);
+            setUserStories([]);
+            setSelectedReleaseId('');
+            setSelectedStoryId('');
+            try {
+                const fetchedReleases = await projectService.getReleases(selectedProjectId);
+                setReleases(fetchedReleases);
+            } catch (err) {
+                setError('Failed to load releases for the selected project.');
+            } finally {
+                setIsProjectLoading(false);
+            }
+        };
+        fetchReleases();
+    }
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (selectedReleaseId) {
+        const fetchUserStories = async () => {
+            setIsProjectLoading(true);
+            setUserStories([]);
+            setSelectedStoryId('');
+            try {
+                const fetchedStories = await projectService.getUserStories(selectedReleaseId);
+                setUserStories(fetchedStories);
+            } catch (err) {
+                setError('Failed to load user stories for the selected release.');
+            } finally {
+                setIsProjectLoading(false);
+            }
+        };
+        fetchUserStories();
+    }
+  }, [selectedReleaseId]);
+
+  const handleFetchRequirement = useCallback(async () => {
+    if (!selectedStoryId) return;
+    setIsProjectLoading(true);
+    try {
+        const story = await projectService.getUserStoryDetails(selectedStoryId);
+        if (story) {
+            setRequirementText(story.description);
+            logAction('Import Requirement', `Fetched requirement from story: '${story.title}' (${story.id}).`);
+        }
+    } catch (err) {
+        setError('Failed to fetch user story details.');
+    } finally {
+        setIsProjectLoading(false);
+    }
+  }, [selectedStoryId, logAction]);
 
 
   const handleGenerate = useCallback(async () => {
@@ -189,7 +295,7 @@ const MainApp: React.FC = () => {
     exportTestCases(testCases, requirements[0], format);
     logAction('Export Data', `Exported ${testCases.length} test cases as ${format.toUpperCase()}.`);
   }, [requirements, testCases, logAction, canExport]);
-  
+
   const handleLogout = () => {
     logAction('User Logout', `User '${user?.username}' logged out.`);
     logout();
@@ -205,6 +311,8 @@ const MainApp: React.FC = () => {
         return <AuditLogReport logs={auditLogs} />;
       case 'health':
         return <AppHealthReport testCases={testCases}/>;
+      case 'architecture':
+        return <SystemArchitecture />;
       case 'dashboard':
       default:
         return (
@@ -232,6 +340,7 @@ const MainApp: React.FC = () => {
         { view: 'compliance', label: 'Compliance Report', icon: ShieldCheckIcon, roles: [Role.Admin, Role.Tester, Role.ComplianceAuditor] },
         { view: 'audit', label: 'Audit Log Report', icon: ClipboardDocumentListIcon, roles: [Role.Admin, Role.ComplianceAuditor] },
         { view: 'health', label: 'App Health Report', icon: CpuChipIcon, roles: [Role.ComplianceAuditor] },
+        { view: 'architecture', label: 'System Architecture', icon: ServerStackIcon, roles: [Role.Admin] },
     ];
     
     const visibleButtons = navButtons.filter(btn => btn.roles.includes(user!.role));
@@ -288,12 +397,12 @@ const MainApp: React.FC = () => {
           <aside className="lg:col-span-1 space-y-6">
              {canGenerate && (
                 <div className="bg-white p-6 rounded-lg shadow-sm">
-                <h2 className="text-lg font-semibold text-gray-800 mb-4">1. Enter Requirement</h2>
+                <h2 className="text-lg font-semibold text-gray-800 mb-4">1. Provide Requirement</h2>
 
                 <div className="space-y-4">
                   <div>
                     <label htmlFor="requirement-text" className="block text-sm font-medium text-gray-700">
-                        Type or paste requirement below
+                        Type, paste, or upload requirement
                     </label>
                     <textarea
                         id="requirement-text"
@@ -301,7 +410,7 @@ const MainApp: React.FC = () => {
                         onChange={(e) => setRequirementText(e.target.value)}
                         placeholder="e.g., The system shall allow pharmacists to dispense medication..."
                         className="w-full h-40 mt-1 p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-shadow disabled:bg-gray-100 disabled:cursor-not-allowed"
-                        disabled={isLoading}
+                        disabled={isLoading || isProjectLoading}
                     />
                   </div>
                   <div>
@@ -314,43 +423,81 @@ const MainApp: React.FC = () => {
                     />
                     <button
                         onClick={handleUploadClick}
-                        disabled={isLoading}
+                        disabled={isLoading || isProjectLoading}
                         className="w-full flex items-center justify-center bg-slate-100 text-slate-700 font-semibold py-2 px-4 rounded-md border border-slate-300 hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-slate-50 disabled:cursor-not-allowed transition-colors"
                     >
                         <ArrowUpTrayIcon className="w-5 h-5 mr-2" />
                         Upload from Document (.txt, .md, .pdf)
                     </button>
                   </div>
-                  <div>
-                     <label htmlFor="ai-model" className="block text-sm font-medium text-gray-700">
-                        Select AI Model
-                    </label>
-                    <div className="relative mt-1">
-                        <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
-                           <CubeTransparentIcon className="h-5 w-5 text-gray-400" aria-hidden="true" />
-                        </div>
-                        <select
-                            id="ai-model"
-                            name="ai-model"
-                            value={selectedModel}
-                            onChange={(e) => setSelectedModel(e.target.value as AIModel)}
-                            disabled={isLoading}
-                            className="block w-full rounded-md border-gray-300 py-2 pl-10 pr-10 text-base focus:border-blue-500 focus:outline-none focus:ring-blue-500 sm:text-sm disabled:bg-gray-100 disabled:cursor-not-allowed"
-                        >
-                            <option value={AIModel.Gemini}>Gemini (Google)</option>
-                            <option value={AIModel.OpenAI}>OpenAI (GPT-4 Mock)</option>
-                            <option value={AIModel.Lambda}>Lambda (Health-QA Mock)</option>
-                        </select>
-                    </div>
-                  </div>
                 </div>
 
                 <hr className="my-6 border-gray-200" />
                 
+                <h2 className="text-lg font-semibold text-gray-800 mb-4">2. Or Import from Project Tool</h2>
+                <div className="space-y-4">
+                    <div>
+                        <label htmlFor="project-select" className="block text-sm font-medium text-gray-700">Project</label>
+                        <select id="project-select" value={selectedProjectId} onChange={(e) => setSelectedProjectId(e.target.value)} disabled={isLoading || isProjectLoading} className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 text-base focus:border-blue-500 focus:outline-none focus:ring-blue-500 sm:text-sm disabled:bg-gray-100">
+                            <option value="">{isProjectLoading ? 'Loading...' : 'Select Project'}</option>
+                            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                        </select>
+                    </div>
+                     <div>
+                        <label htmlFor="release-select" className="block text-sm font-medium text-gray-700">Release</label>
+                        <select id="release-select" value={selectedReleaseId} onChange={(e) => setSelectedReleaseId(e.target.value)} disabled={!selectedProjectId || isLoading || isProjectLoading} className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 text-base focus:border-blue-500 focus:outline-none focus:ring-blue-500 sm:text-sm disabled:bg-gray-100">
+                            <option value="">Select Release</option>
+                            {releases.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                        </select>
+                    </div>
+                     <div>
+                        <label htmlFor="story-select" className="block text-sm font-medium text-gray-700">User Story / Requirement</label>
+                        <select id="story-select" value={selectedStoryId} onChange={(e) => setSelectedStoryId(e.target.value)} disabled={!selectedReleaseId || isLoading || isProjectLoading} className="mt-1 block w-full rounded-md border-gray-300 py-2 px-3 text-base focus:border-blue-500 focus:outline-none focus:ring-blue-500 sm:text-sm disabled:bg-gray-100">
+                            <option value="">Select User Story</option>
+                             {userStories.map(s => <option key={s.id} value={s.id}>{s.id} - {s.title}</option>)}
+                        </select>
+                    </div>
+                    <button
+                        onClick={handleFetchRequirement}
+                        disabled={!selectedStoryId || isLoading || isProjectLoading}
+                        className="w-full flex items-center justify-center bg-slate-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
+                    >
+                       <CloudArrowDownIcon className="w-5 h-5 mr-2" />
+                       Fetch Requirement Text
+                    </button>
+                </div>
+
+
+                <hr className="my-6 border-gray-200" />
+                <h2 className="text-lg font-semibold text-gray-800 mb-4">3. Configure & Generate</h2>
+
+                <div>
+                   <label htmlFor="ai-model" className="block text-sm font-medium text-gray-700">
+                      Select AI Model
+                  </label>
+                  <div className="relative mt-1">
+                      <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                         <CubeTransparentIcon className="h-5 w-5 text-gray-400" aria-hidden="true" />
+                      </div>
+                      <select
+                          id="ai-model"
+                          name="ai-model"
+                          value={selectedModel}
+                          onChange={(e) => setSelectedModel(e.target.value as AIModel)}
+                          disabled={isLoading || isProjectLoading}
+                          className="block w-full rounded-md border-gray-300 py-2 pl-10 pr-10 text-base focus:border-blue-500 focus:outline-none focus:ring-blue-500 sm:text-sm disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      >
+                          <option value={AIModel.Gemini}>Gemini (Google)</option>
+                          <option value={AIModel.OpenAI}>OpenAI (GPT-4 Mock)</option>
+                          <option value={AIModel.Lambda}>Lambda (Health-QA Mock)</option>
+                      </select>
+                  </div>
+                </div>
+
                 <button
                     onClick={handleGenerate}
-                    disabled={isLoading || !requirementText.trim()}
-                    className="w-full flex items-center justify-center bg-blue-600 text-white font-bold py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-blue-300 disabled:cursor-not-allowed transition-colors"
+                    disabled={isLoading || isProjectLoading || !requirementText.trim()}
+                    className="w-full mt-6 flex items-center justify-center bg-blue-600 text-white font-bold py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-blue-300 disabled:cursor-not-allowed transition-colors"
                 >
                     {isLoading ? (
                     <>

@@ -68,3 +68,22 @@ export enum AIModel {
   OpenAI = 'gpt-4-healthcare',
   Lambda = 'lambda-health-qa',
 }
+
+// Types for Project Management Tool Integration
+export interface Project {
+  id: string;
+  name: string;
+}
+
+export interface Release {
+  id: string;
+  name: string;
+  projectId: string;
+}
+
+export interface UserStory {
+  id: string;
+  title: string;
+  description: string;
+  releaseId: string;
+}
