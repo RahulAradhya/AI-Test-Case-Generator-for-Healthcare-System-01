@@ -11,6 +11,9 @@ import { DocumentTextIcon, ChartBarIcon, ShieldCheckIcon, BeakerIcon, SparklesIc
 import { useAuth } from './auth/AuthContext';
 import { Login } from './components/Login';
 
+// Declare pdfjsLib from the CDN script to satisfy TypeScript
+declare var pdfjsLib: any;
+
 type View = 'dashboard' | 'traceability' | 'compliance' | 'audit' | 'health';
 
 const roleColors: Record<Role, { bg: string; text: string; accent: string }> = {
@@ -53,6 +56,13 @@ const MainApp: React.FC = () => {
   }, [user]);
 
   useEffect(() => {
+    // Set up PDF.js worker one time on component mount
+    if (typeof pdfjsLib !== 'undefined') {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
+    }
+  }, []);
+
+  useEffect(() => {
     if (user) {
         logAction('User Login', `User '${user.username}' logged in successfully.`);
         // Set default view based on role
@@ -62,6 +72,7 @@ const MainApp: React.FC = () => {
             setActiveView('dashboard');
         }
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]); // Run only when user object changes
 
 
@@ -89,30 +100,74 @@ const MainApp: React.FC = () => {
     }
   }, [requirementText, selectedModel, canGenerate, logAction]);
   
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const extractTextFromPdf = async (file: File): Promise<string> => {
+    const reader = new FileReader();
+    return new Promise((resolve, reject) => {
+        reader.onload = async (event) => {
+            if (!event.target?.result) {
+                return reject(new Error("Failed to read PDF file."));
+            }
+            try {
+                const typedarray = new Uint8Array(event.target.result as ArrayBuffer);
+                const pdf = await pdfjsLib.getDocument(typedarray).promise;
+                let fullText = '';
+                for (let i = 1; i <= pdf.numPages; i++) {
+                    const page = await pdf.getPage(i);
+                    const textContent = await page.getTextContent();
+                    const pageText = textContent.items.map((item: any) => item.str).join(' ');
+                    fullText += pageText + '\n';
+                }
+                resolve(fullText.trim());
+            } catch (error) {
+                console.error('Error parsing PDF:', error);
+                reject(new Error("Could not parse PDF file. It might be corrupted or protected."));
+            }
+        };
+        reader.onerror = () => {
+            reject(new Error("Error reading PDF file."));
+        };
+        reader.readAsArrayBuffer(file);
+    });
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    if (file.type === 'text/plain' || file.type === 'text/markdown') {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const text = e.target?.result;
-        if (typeof text === 'string') {
-          setRequirementText(text);
-          setError(null);
-          logAction('File Upload', `Uploaded file: ${file.name}`);
+    setError(null);
+    setIsLoading(true);
+
+    try {
+        let text = '';
+        if (file.name.endsWith('.txt') || file.name.endsWith('.md')) {
+            text = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve(e.target?.result as string);
+                reader.onerror = () => reject(new Error('Error reading text file.'));
+                reader.readAsText(file);
+            });
+        } else if (file.name.endsWith('.pdf')) {
+            if (typeof pdfjsLib === 'undefined') {
+                throw new Error('PDF processing library is not loaded. Please try again in a moment.');
+            }
+            text = await extractTextFromPdf(file);
         } else {
-          setError('Failed to read file content.');
+            throw new Error('Please upload a valid document (.txt, .md, .pdf).');
         }
-      };
-      reader.onerror = () => {
-        setError('Error reading file.');
-      };
-      reader.readAsText(file);
-    } else {
-      setError('Please upload a valid text file (.txt, .md).');
+        
+        setRequirementText(text);
+        logAction('File Upload', `Uploaded and processed file: ${file.name}`);
+
+    } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
+        setError(errorMessage);
+        logAction('File Upload Failed', `File: ${file.name}, Error: ${errorMessage}`);
+    } finally {
+        setIsLoading(false);
+        if (event.target) {
+            event.target.value = ''; // Reset file input
+        }
     }
-    event.target.value = '';
   };
 
   const handleUploadClick = () => {
@@ -255,7 +310,7 @@ const MainApp: React.FC = () => {
                         ref={fileInputRef}
                         onChange={handleFileUpload}
                         className="hidden"
-                        accept=".txt,.md"
+                        accept=".txt,.md,.pdf"
                     />
                     <button
                         onClick={handleUploadClick}
@@ -263,7 +318,7 @@ const MainApp: React.FC = () => {
                         className="w-full flex items-center justify-center bg-slate-100 text-slate-700 font-semibold py-2 px-4 rounded-md border border-slate-300 hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-slate-50 disabled:cursor-not-allowed transition-colors"
                     >
                         <ArrowUpTrayIcon className="w-5 h-5 mr-2" />
-                        Upload from Document (.txt, .md)
+                        Upload from Document (.txt, .md, .pdf)
                     </button>
                   </div>
                   <div>
